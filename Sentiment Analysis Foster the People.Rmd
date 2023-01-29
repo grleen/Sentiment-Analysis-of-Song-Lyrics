@@ -1,0 +1,308 @@
+---
+title: "Advanced Geovisualization Lab 4"
+author: "Gurleen Kaur"
+date: "2022-11-29"
+output: 
+  html_document: 
+    theme: journal
+    highlight: zenburn
+    toc: yes
+    toc_float: yes
+---
+
+Loading the required libraries first
+```{r, warning=FALSE, message=FALSE}
+library(geniusr)
+library(tidyverse)
+library(tidytext)
+library(textdata)
+library(ggplot2)
+library(dplyr)
+library(wordcloud)
+library(RColorBrewer)
+library(reshape2)
+library(stringr)
+```
+
+# **Foster the People's Lyrics Sentiment Analysis**
+This project is a sentiment analysis of the songs of the indie pop band, Foster The People. I am collectively analyzing the sentiments of the the songs within their various albums. The inspiration of this code is taken from class tutorial and [Tom McNamara's Tutorial](https://www.r-bloggers.com/2021/01/scraping-analysing-and-visualising-lyrics-in-r/).
+
+## **Getting the artist ID, song title and lyrics**
+```{r, warning=FALSE}
+# Find artist ID
+search_artist("Foster The People") # 703
+songs <- get_artist_songs_df(703) 
+
+# Get all song IDs
+ids <- c(as.character(songs$song_id))
+
+# Create empty dataframe to house them
+allLyrics <- data.frame()
+
+# Add lyrics to that df
+#for (id in ids) {
+  #allLyrics <- rbind(get_lyrics_id(id), allLyrics)
+#}
+# This loop behaves strange
+```
+
+The above loop behaves strangely and returns lyrics to only some songs and also incomeplte lyrics, so there's another way to fix it. Here I'm using the `tryCatch()` function.
+```{r, warning=FALSE}
+while (length(ids) > 0) {
+  for (id in ids) {
+    tryCatch({
+      allLyrics <- rbind(get_lyrics_id(id), allLyrics)
+      successful <- unique(allLyrics$song_id)
+      ids <- ids[!ids %in% successful]
+      print(paste("done - ", id))
+      print(paste("New length is ", length(ids)))
+    }, error = function(e){})
+  }
+}
+```
+
+### **Creating a dataframe containing the song IDs and their respective albums**
+```{r, warning=FALSE}
+allIds <- data.frame(song_id = unique(allLyrics$song_id))
+allIds$album <- ""
+
+for (song in allIds$song_id) {
+  allIds[match(song,allIds$song_id),2] <- get_song_df(song)[12]
+  print(allIds[match(song,allIds$song_id),])
+}
+allLyrics <- full_join(allIds, allLyrics)
+head(allIds)
+```
+
+Here, we can see there are some songs that are not associated with an album. This means that they were relased as singles and Genius has not assigned them to an album. So, the code here replaces the NAs with "Single Only".
+```{r, warning=FALSE}
+allIds$album[is.na(allIds$album)] <- "Single Only"
+head(allIds)
+
+allLyrics2 <- full_join(allLyrics, allIds)
+```
+
+## **Tokenzing the words**
+```{r, warning=FALSE}
+allLyricsTokenised <- allLyrics2 %>%
+  unnest_tokens(word, line)
+```
+
+Looking at the most common word
+```{r, warning=FALSE}
+head(allLyricsTokenised %>%
+  count(word, sort = TRUE))
+```
+Interestingly, songs by Foster the People have "you" as the most common word!
+
+There are a lot of stopwords, so the code below removes these.
+```{r, warning=FALSE}
+# Remove stopwords
+tidyLyrics <- allLyricsTokenised %>%
+  anti_join(stop_words)
+# Top words again
+head(tidyLyrics %>%
+  count(word, sort = TRUE))
+```
+Now, the most common word is "yeah", followed by "run", "stop", "ooh", "love". I guess, "you" held some weight here!!
+
+## **Visualizing Top Lyrics**
+```{r, warning=FALSE}
+topFew <- tidyLyrics %>%
+  group_by(album, word) %>%
+  mutate(n = row_number()) %>%
+  ungroup()
+```
+
+Removing extra columns from the dataframe
+```{r, warning=FALSE}
+topFew <- topFew[,c("album", "word", "n")]
+
+# Taking only max for each word by album
+topFew <- topFew %>%
+  group_by(album, word) %>%
+  summarise(n = max(n))%>%
+  ungroup()
+```
+
+Adding the columns and creating a subset with words that appear atleast 40 times. Also removing the word "ooh"!
+```{r, warning=FALSE}
+# Subset
+topFew <- topFew %>% 
+  group_by(word) %>%
+  mutate(total = sum(n)) %>%
+  filter(total >= 40,
+         word != "ooh") %>%
+  ungroup()
+```
+
+Assigning colors for each album that will show up in the graph.
+```{r, warning=FALSE}
+albumCol <- c("#394887",      # DS(CW)Remixes
+               "#9e5a47",      # Darkest of Nights
+               "#f9c784",      # Sacred Hearts Club
+               "#cf57d4",      # Sit Next to Me (Versions)
+               "#e8b0a5",      # Spotify Sessions
+               "#d18943",      # Supermodel
+               "#4C1A57",      # Torches
+               "#52BA4A",      # Torches (remix)
+               "#7268CC",      # Torches X (delux)
+               "#5BBFCF")      # Singles
+
+names(albumCol) <- c("Don't Stop (Colors on the Walls) [Remixes]", "In the Darkest of Nights, Let the Birds Sing",
+                      "Sacred Hearts Club", "Sit Next to Me (Versions)", "Spotify Sessions (Live from The Village)", "Supermodel",
+                      "Torches", "Torches (Remixes)", "Torches X (Deluxe Edition)", "NA")
+ 
+# This ensures bars are stacked in order of release date
+topFew$album <- factor(topFew$album, levels = c("Torches",
+                                                 "Torches (Remixes)",
+                                                 "Don't Stop (Colors on the Walls) [Remixes]", 
+                                                 "Spotify Sessions (Live from The Village)", 
+                                                 "Supermodel", 
+                                                 "Sit Next to Me (Versions)",
+                                                 "In the Darkest of Nights, Let the Birds Sing", "Torches X (Deluxe Edition)", "NA"
+ ))
+```
+
+### **Plot for most used words**
+```{r, warning=FALSE}
+wordsPlot <- ggplot(topFew) +
+     
+     geom_bar(aes(x = reorder(word, total), 
+                  y = n,
+                  fill = as.factor(album)),
+              colour = "black",
+              stat = "identity") +
+     
+     coord_flip() +
+     
+     labs(title = "Foster The People's most used words",
+          subtitle = "The words that appear more than 40 times in Foster The People's catalogue",
+          caption = "Source: genius.com",
+          y = "Number of appearances",
+          x = "Word",
+          fill = "Album")+
+     
+     scale_fill_manual(values = albumCol) +
+     
+     theme(title = element_text(face = "italic", size = 10), 
+           
+           panel.border = element_rect(colour = "black", fill=NA, size=1),
+           panel.background = element_rect(colour = "black", fill = "white"),
+           panel.grid.major.x = element_line(colour="grey90",size = 0.1, linetype = 1),
+           
+           axis.title = element_text(face = "italic",size = 9, colour = "black"),
+           axis.ticks.length = unit(5, units = "pt"),
+           
+           legend.background = NULL,
+           legend.position = "top",
+           legend.key.size = unit(8,"pt"),
+           legend.box.spacing = unit(5,"pt"),
+           legend.text = element_text(size = 8),
+           
+           axis.text.y = element_text(size = 8))
+
+wordsPlot
+```
+
+## **Sentiment Analysis on Some of the Albums Using "bing"**
+### **Sentiment Plot**
+```{r, warning=FALSE}
+# Create Sentiment dataframe
+ftpsentiments <- tidyLyrics %>%
+  inner_join(get_sentiments("bing"))%>% 
+  count(album, song_name, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+# Factor as we did above
+ftpsentiments$album <- factor(ftpsentiments$album, 
+                               levels = c("Torches",
+                                          "Don't Stop (Colors on the Walls) [Remixes]", 
+                                          "Spotify Sessions (Live from The Village)", 
+                                          "Supermodel", 
+                                          "In the Darkest of Nights, Let the Birds Sing"))
+
+
+# sent plot
+sentPlot <- ggplot(ftpsentiments,
+                   aes(reorder(song_name, 
+                               sentiment), 
+                       sentiment, 
+                       fill = album)) +
+  
+  geom_col(show.legend = FALSE) +
+  
+  facet_wrap(~album, 
+             ncol = 3, 
+             scales = "free")+
+  
+  scale_fill_manual(values = albumCol)+
+  
+  labs(title = "Foster The People's songs ranked by sentiment",
+       caption = "Source: genius.com",
+       y = "Sentiment score",
+       fill = "Album")+
+  
+  theme(title = element_text(face = "italic", size = 10), 
+      
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      panel.background = element_rect(colour = "black", fill = "white"),
+      panel.grid.major.x = element_line(colour="grey90",size = 0.1, linetype = 1),
+      
+      axis.title.x = element_text(face = "italic",size = 8, colour = "black"),
+      axis.title.y = element_blank(),
+      axis.ticks.length = unit(5, units = "pt"),
+      
+      legend.background = NULL,
+      legend.position = "top",
+      legend.key.size = unit(8,"pt"),
+      legend.box.spacing = unit(5,"pt")) +
+  
+  coord_flip()
+
+sentPlot
+```
+
+## **Evaluating Positive and Negative Words**
+This section evaluates the frequency of positive and negative words in the lyrics.
+```{r, warning=FALSE}
+bing_word_counts <- tidyLyrics %>%
+     inner_join(get_sentiments("bing")) %>%
+     count(word, sentiment, sort = TRUE) %>%
+     ungroup()
+```
+
+```{r, warning=FALSE}
+bing_word_counts %>%
+     group_by(sentiment) %>%
+     top_n(10) %>%
+     ungroup() %>%
+     mutate(word = reorder(word, n)) %>%
+     ggplot(aes(word, n, fill = sentiment)) +
+     geom_col(show.legend = FALSE) +
+     facet_wrap(~sentiment, scales = "free_y") +
+     labs(y = "Contribution to sentiment",
+          x = NULL) +
+     coord_flip()
+```
+
+## **Wordcloud**
+Creating a simple wordcloud out of the tokenized words.
+```{r, warning=FALSE}
+tidyLyrics %>%
+     anti_join(stop_words) %>%
+     count(word) %>%
+     with(wordcloud(word, n, max.words = 100))
+```
+
+Creating a stylizeed wordcloud depicting postive emotion words in pink and negative emotion words in gray.
+```{r, warning=FALSE}
+tidyLyrics %>%
+     inner_join(get_sentiments("bing")) %>%
+     count(word, sentiment, sort = TRUE) %>%
+     acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+     comparison.cloud(colors = c("gray40", "pink"),
+                      max.words = 100)
+```
+
